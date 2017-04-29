@@ -1,15 +1,22 @@
 import glob
-import random
 import os
 
 import numpy as np
 import tensorflow as tf
 
 
+label_type = 'phn'
+
 num_epochs = 1
 batch_size = 5
 num_features = 39  # mfcc feature size
-label_type = 'phn'
+num_rnn_hidden = 256
+
+if label_type == 'phn':
+    num_classes = 62
+elif label_type == 'cha':
+    num_classes = 28
+
 train_data_dir = '/home/rlan/dataset/timit_lite/mfcc/train'
 train_label_dir = '/home/rlan/dataset/timit_lite/label/train/{}'.format(label_type)
 # test_data_dir = '/home/rlan/dataset/timit_lite/mfcc/test'
@@ -21,7 +28,7 @@ def to_sparse_representation(label, batch_idx):
     
     :param label: full label data
     :param batch_idx: indices generated for current batch
-    :return: a 3-element tuple meets the input criteria of tf.sparse_tensor
+    :return: a 3-element tuple meets the input criteria of tf.SparseTensor
     """
     indices = []
     vals = []
@@ -33,7 +40,7 @@ def to_sparse_representation(label, batch_idx):
 
     shape = [len(batch_idx), np.max(indices, axis=0)[1] + 1]
 
-    return (np.array(indices), np.array(vals), np.array(shape))
+    return np.array(indices), np.array(vals), np.array(shape)
 
 
 def create_batches(data, label, max_seq_length, batch_size, rand_idx):
@@ -80,17 +87,51 @@ def main():
     ##############################################
     #                Build Graph
     ##############################################
-    pass
+    graph = tf.Graph()
+    with graph.as_default():
+        ##################
+        #     INPUT
+        ##################
+        X_train = tf.placeholder(tf.float32, shape=(max_seq_length, batch_size, num_features), name='X_train')
+        y_indices = tf.placeholder(tf.int32, shape=(None, 2))
+        y_vals = tf.placeholder(tf.int32)
+        y_shape = tf.placeholder(tf.int32, shape=(1, 2))
+        y_train = tf.SparseTensor(y_indices, y_vals, y_shape)
+        seq_lengths = tf.placeholder(tf.float32, shape=(batch_size, ))
+
+        ##################
+        #     BGRU
+        ##################
+        forward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
+        backward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
+        (output_fw, output_bw), _ = tf.rnn.bidirectional_dynamic_rnn(forward_cell,
+                                                                     backward_cell,
+                                                                     inputs=X_train,
+                                                                     dtype=tf.float32,
+                                                                     sequence_length=seq_lengths,
+                                                                     time_major=True)
+
+        brnn_merged = output_fw + output_bw
+        ##################
+        #     CTC
+        ##################
+        fc_W = tf.Variable(tf.truncated_normal([num_rnn_hidden, num_classes]), name='fc_W')
+        fc_b = tf.Variable(tf.truncated_normal([num_classes]), name='fc_b')
+        logits = [tf.matmul(t, fc_W) + fc_b for t in brnn_merged]
+        logits3d = tf.stack(logits)
+        loss = tf.reduce_mean(tf.nn.ctc_loss(y_train, logits3d, seq_lengths))
+
     ##############################################
     #                Run TF Session
     ##############################################
-    for epoch in range(num_epochs):
-        num_samples = len(train_data)
-        batches = create_batches(train_data, train_label, max_seq_length, batch_size, np.random.permutation(num_samples))
+    with tf.Session(graph=graph) as sess:
+        for epoch in range(num_epochs):
+            num_samples = len(train_data)
+            batches = create_batches(train_data, train_label, max_seq_length, batch_size, np.random.permutation(num_samples))
 
-        for (batch_data, batch_label_sparse_repr) in batches:
-            print(batch_data.shape)
-            print(batch_label_sparse_repr[2])
+            for (batch_data, batch_label_sparse_repr) in batches:
+                print(batch_data.shape)
+                print(batch_label_sparse_repr[2])
 
 
 if __name__ == '__main__':
