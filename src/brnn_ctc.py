@@ -11,6 +11,8 @@ num_epochs = 1
 batch_size = 5
 num_features = 39  # mfcc feature size
 num_rnn_hidden = 256
+learning_rate = 0.0001
+grad_clip = 0.8
 
 if label_type == 'phn':
     num_classes = 62
@@ -120,6 +122,8 @@ def main():
         logits = [tf.matmul(t, fc_W) + fc_b for t in brnn_merged]
         logits3d = tf.stack(logits)
         loss = tf.reduce_mean(tf.nn.ctc_loss(y_train, logits3d, seq_lengths))
+        grads, _ = tf.clip_by_global_norm(tf.gradients(self.loss, self.var_trainable_op), grad_clip)
+        optimizer = tf.train.AdamOptimizer(learning_rate)
 
     ##############################################
     #                Run TF Session
