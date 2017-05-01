@@ -1,14 +1,19 @@
 import glob
 import os
+import sys
+
+sys.path.append('..')
 
 import numpy as np
 import tensorflow as tf
 
+from utils import label_indices_to_characters
+
 
 label_type = 'phn'
 
-num_epochs = 1
-batch_size = 5
+num_epochs = 100
+batch_size = 10
 num_features = 39  # mfcc feature size
 num_rnn_hidden = 256
 learning_rate = 0.0001
@@ -132,11 +137,11 @@ def main():
         var_trainable_op = tf.trainable_variables()
         grads, _ = tf.clip_by_global_norm(tf.gradients(loss, var_trainable_op), grad_clip)
         optimizer = tf.train.AdamOptimizer(learning_rate).apply_gradients(zip(grads, var_trainable_op))
-        predictions = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d, seq_lengths, merge_repeated=False)[0][0])
-        error_rate = tf.reduce_sum(tf.edit_distance(predictions, y_train, normalize=True))
+        pred = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d, seq_lengths, merge_repeated=False)[0][0])
+        err_rate = tf.reduce_sum(tf.edit_distance(pred, y_train, normalize=True))
 
         tf.summary.scalar('loss', loss)
-        tf.summary.scalar('error_rate', error_rate)
+        tf.summary.scalar('err_rate', err_rate)
         merged = tf.summary.merge_all()
 
     ##############################################
@@ -151,17 +156,26 @@ def main():
             batches = create_batches(train_data, train_label, max_seq_length, batch_size, np.random.permutation(num_samples))
 
             for batch, ((batch_data, batch_seq_lengths), (batch_indices, batch_vals, batch_shape)) in enumerate(batches):
-                _, loss, error_rate, summary = sess.run([optimizer, loss, error_rate, merged],
-                                                        feed_dict={X_train: batch_data,
-                                                                   y_indices: batch_indices,
-                                                                   y_vals: batch_vals,
-                                                                   y_shape: batch_shape,
-                                                                   seq_lengths: batch_seq_lengths})
+                _, batch_loss, batch_err_rate, batch_pred, summary = sess.run([optimizer, loss, err_rate, pred, merged],
+                                                                              feed_dict={X_train: batch_data,
+                                                                                         y_indices: batch_indices,
+                                                                                         y_vals: batch_vals,
+                                                                                         y_shape: batch_shape,
+                                                                                         seq_lengths: batch_seq_lengths})
 
                 num_processed_batches += 1
-                print('[epoch: {}, batch: {}] loss = {}, error_rate = {}'.format(epoch, batch, loss, error_rate))
+                print('[epoch: {}, batch: {}] loss = {}, err_rate = {}'.format(epoch, batch, batch_loss, batch_err_rate))
                 tb_file_writer.add_summary(summary, num_processed_batches)
 
+            num_samples_in_batch = max(batch_indices[:, 0])
+            for sample_id in range(num_samples_in_batch):
+                ground_truth_label_seq = batch_vals[batch_indices[:, 0] == sample_id]
+                pred_label_seq = batch_pred.values[batch_pred.indices[:, 0] == sample_id]
+                print('-' * 80)
+                print('Ground Truth: {}'.format(label_indices_to_characters(ground_truth_label_seq)))
+                print('  Prediction: {}'.format(label_indices_to_characters(pred_label_seq)))
+
+            print('-' * 80)
 
 if __name__ == '__main__':
     main()
