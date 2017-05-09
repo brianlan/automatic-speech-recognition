@@ -12,8 +12,8 @@ from utils import label_indices_to_characters
 
 label_type = 'phn'
 
-num_epochs = 100
-batch_size = 10
+num_epochs = 20
+batch_size = 5
 num_features = 39  # mfcc feature size
 num_rnn_hidden = 256
 learning_rate = 0.0001
@@ -22,12 +22,12 @@ grad_clip = 0.8
 if label_type == 'phn':
     num_classes = 62
 elif label_type == 'cha':
-    num_classes = 28
+    num_classes = 29
 
 train_data_dir = '/home/rlan/dataset/timit_lite/mfcc/train'
 train_label_dir = '/home/rlan/dataset/timit_lite/label/train/{}'.format(label_type)
-# test_data_dir = '/home/rlan/dataset/timit_lite/mfcc/test'
-# test_label_dir = '/home/rlan/dataset/timit_lite/label/test/{}'.format(label_type)
+test_data_dir = '/home/rlan/dataset/timit_lite/mfcc/test'
+test_label_dir = '/home/rlan/dataset/timit_lite/label/test/{}'.format(label_type)
 
 TENSORBOARD_LOG_DIR = '/home/rlan/tensorboard_log/automatic-speech-recognition/'
 
@@ -64,7 +64,7 @@ def create_batches(data, label, max_seq_length, batch_size, rand_idx):
     :return: Yields a tuple consists of data and label in a batch.
     """
     num_samples = len(data)
-    num_batches = (num_samples - 1) // batch_size + 1
+    num_batches = num_samples // batch_size
     for i in xrange(num_batches):
         batch_start_pos = i * batch_size
         batch_end_pos = min((i + 1) * batch_size, num_samples)
@@ -84,17 +84,33 @@ def main():
     #                Load Data
     ##############################################
     train_data = []
+    test_data = []
     train_label = []
+    test_label = []
     for fname in glob.glob(os.path.join(train_data_dir, '*.npy')):
         train_data.append(np.load(fname))
 
     for fname in glob.glob(os.path.join(train_label_dir, '*.npy')):
         train_label.append(np.load(fname))
 
+    for fname in glob.glob(os.path.join(test_data_dir, '*.npy')):
+        test_data.append(np.load(fname))
+
+    for fname in glob.glob(os.path.join(test_label_dir, '*.npy')):
+        test_label.append(np.load(fname))
+
     ##############################################
     #                Preparation
     ##############################################
-    max_seq_length = max([d.shape[1] for d in train_data])
+    max_seq_length = max([d.shape[1] for d in train_data + test_data])
+    num_test_samples = len(test_data)
+
+    (test_data_tensor, test_seq_lengths), (test_label_indices, test_label_vals, test_label_shape) = \
+        list(create_batches(test_data,
+                            test_label,
+                            max_seq_length,
+                            len(test_data),
+                            range(len(test_data))))[0]  # borrow create_batch to transform test data / label
 
     ##############################################
     #                Build Graph
@@ -105,43 +121,86 @@ def main():
         #     INPUT
         ##################
         X_train = tf.placeholder(tf.float32, shape=(max_seq_length, batch_size, num_features), name='X_train')
-        y_indices = tf.placeholder(tf.int64, shape=(None, 2))
-        y_vals = tf.placeholder(tf.int64)
-        y_shape = tf.placeholder(tf.int64, shape=(2, ))
-        y_train = tf.cast(tf.SparseTensor(y_indices, y_vals, y_shape), tf.int32)
-        seq_lengths = tf.placeholder(tf.int32, shape=(batch_size, ))
+        X_test = tf.placeholder(tf.float32, shape=(max_seq_length, num_test_samples, num_features), name='X_test')
+
+        y_train_indices = tf.placeholder(tf.int64, shape=(None, 2))
+        y_train_vals = tf.placeholder(tf.int64)
+        y_train_shape = tf.placeholder(tf.int64, shape=(2, ))
+        y_train = tf.cast(tf.SparseTensor(y_train_indices, y_train_vals, y_train_shape), tf.int32)
+
+        y_test_indices = tf.placeholder(tf.int64, shape=(None, 2))
+        y_test_vals = tf.placeholder(tf.int64)
+        y_test_shape = tf.placeholder(tf.int64, shape=(2,))
+        y_test = tf.cast(tf.SparseTensor(y_test_indices, y_test_vals, y_test_shape), tf.int32)
+
+        seq_lengths_train = tf.placeholder(tf.int32, shape=(batch_size, ))
+        seq_lengths_test = tf.placeholder(tf.int32, shape=(num_test_samples,))
 
         ##################
         #     BGRU
         ##################
         forward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
         backward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
-        (output_fw, output_bw), _ = tf.nn.bidirectional_dynamic_rnn(forward_cell,
-                                                                    backward_cell,
-                                                                    inputs=X_train,
-                                                                    dtype=tf.float32,
-                                                                    sequence_length=seq_lengths,
-                                                                    time_major=True)
 
-        brnn_combined_outputs = [tf.reshape(t, shape=(batch_size, num_rnn_hidden)) for t in
-                                 tf.split(output_fw + output_bw, max_seq_length, axis=0)]
+        def brnn_layer(fw_cell, bw_cell, inputs, seq_lengths):
+            (output_fw, output_bw), _ = tf.nn.bidirectional_dynamic_rnn(fw_cell,
+                                                                        bw_cell,
+                                                                        inputs=inputs,
+                                                                        dtype=tf.float32,
+                                                                        sequence_length=seq_lengths,
+                                                                        time_major=True)
+
+            brnn_combined_outputs = output_fw + output_bw
+            return brnn_combined_outputs
+
+        with tf.variable_scope('rlan') as scope:
+            brnn_outputs_train = brnn_layer(forward_cell, backward_cell, X_train, seq_lengths_train)
+            brnn_outputs_train = [tf.reshape(t, shape=(batch_size, num_rnn_hidden)) for t in
+                                  tf.split(brnn_outputs_train, max_seq_length, axis=0)]
+
+            scope.reuse_variables()
+
+            brnn_outputs_test = brnn_layer(forward_cell, backward_cell, X_test, seq_lengths_test)
+            brnn_outputs_test = [tf.reshape(t, shape=(num_test_samples, num_rnn_hidden)) for t in
+                                 tf.split(brnn_outputs_test, max_seq_length, axis=0)]
+
+        # TODO: [2] Merge Strategy:
+        # TODO:       shall we multiply W1 and W2 for forward and backword RNN respectively and add bias as well
+        # TODO:       as suggested by paper https://arxiv.org/pdf/1303.5778.pdf
+
+        # TODO: [3] Multiple BRNN Layers
+
+        # TODO: [4] Joint LM-acoustic Model
         ##################
         #     CTC
         ##################
-        fc_W = tf.Variable(tf.truncated_normal([num_rnn_hidden, num_classes]), name='fc_W')
-        fc_b = tf.Variable(tf.truncated_normal([num_classes]), name='fc_b')
+        # with tf.variable_scope("ctc") as scope:
+        fc_W = tf.get_variable('fc_W', initializer=tf.truncated_normal([num_rnn_hidden, num_classes]))
+        fc_b = tf.get_variable('fc_b', initializer=tf.truncated_normal([num_classes]))
 
-        logits = [tf.matmul(output, fc_W) + fc_b for output in brnn_combined_outputs]
-        logits3d = tf.stack(logits)
-        loss = tf.reduce_mean(tf.nn.ctc_loss(y_train, logits3d, seq_lengths))
+        logits_train = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_train]
+        logits3d_train = tf.stack(logits_train)
+
+        logits_test = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_test]
+        logits3d_test = tf.stack(logits_test)
+
+        loss_train = tf.reduce_mean(tf.nn.ctc_loss(y_train, logits3d_train, seq_lengths_train))
+        loss_test = tf.reduce_mean(tf.nn.ctc_loss(y_test, logits3d_test, seq_lengths_test))
+
         var_trainable_op = tf.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(tf.gradients(loss, var_trainable_op), grad_clip)
+        grads, _ = tf.clip_by_global_norm(tf.gradients(loss_train, var_trainable_op), grad_clip)
         optimizer = tf.train.AdamOptimizer(learning_rate).apply_gradients(zip(grads, var_trainable_op))
-        pred = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d, seq_lengths, merge_repeated=False)[0][0])
-        err_rate = tf.reduce_sum(tf.edit_distance(pred, y_train, normalize=True))
 
-        tf.summary.scalar('loss', loss)
-        tf.summary.scalar('err_rate', err_rate)
+        pred_train = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_train, seq_lengths_train, merge_repeated=False)[0][0])
+        err_rate_train = tf.reduce_mean(tf.edit_distance(pred_train, y_train, normalize=True))
+
+        pred_test = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_test, seq_lengths_test, merge_repeated=False)[0][0])
+        err_rate_test = tf.reduce_sum(tf.edit_distance(pred_test, y_test, normalize=True))
+
+        tf.summary.scalar('loss_train', loss_train)
+        tf.summary.scalar('loss_test', loss_test)
+        tf.summary.scalar('err_rate_train', err_rate_train)
+        tf.summary.scalar('err_rate_test', err_rate_test)
         merged = tf.summary.merge_all()
 
     ##############################################
@@ -156,26 +215,46 @@ def main():
             batches = create_batches(train_data, train_label, max_seq_length, batch_size, np.random.permutation(num_samples))
 
             for batch, ((batch_data, batch_seq_lengths), (batch_indices, batch_vals, batch_shape)) in enumerate(batches):
-                _, batch_loss, batch_err_rate, batch_pred, summary = sess.run([optimizer, loss, err_rate, pred, merged],
-                                                                              feed_dict={X_train: batch_data,
-                                                                                         y_indices: batch_indices,
-                                                                                         y_vals: batch_vals,
-                                                                                         y_shape: batch_shape,
-                                                                                         seq_lengths: batch_seq_lengths})
+                _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred, summary = \
+                    sess.run([optimizer, loss_train, err_rate_train, pred_train, loss_test, err_rate_test, pred_test, merged],
+                             feed_dict={X_train: batch_data,
+                                        y_train_indices: batch_indices,
+                                        y_train_vals: batch_vals,
+                                        y_train_shape: batch_shape,
+                                        seq_lengths_train: batch_seq_lengths,
+                                        X_test: test_data_tensor,
+                                        y_test_indices: test_label_indices,
+                                        y_test_vals: test_label_vals,
+                                        y_test_shape: test_label_shape,
+                                        seq_lengths_test: test_seq_lengths})
 
                 num_processed_batches += 1
-                print('[epoch: {}, batch: {}] loss = {}, err_rate = {}'.format(epoch, batch, batch_loss, batch_err_rate))
+                print('[epoch: {}, batch: {}] loss_train = {}, err_train = {}, loss_test = {}, err_test = {}'.format(
+                    epoch,
+                    batch,
+                    batch_loss,
+                    batch_err_rate,
+                    cur_test_loss,
+                    cur_test_err_rate
+                ))
                 tb_file_writer.add_summary(summary, num_processed_batches)
 
-            num_samples_in_batch = max(batch_indices[:, 0])
-            for sample_id in range(num_samples_in_batch):
-                ground_truth_label_seq = batch_vals[batch_indices[:, 0] == sample_id]
-                pred_label_seq = batch_pred.values[batch_pred.indices[:, 0] == sample_id]
-                print('-' * 80)
-                print('Ground Truth: {}'.format(label_indices_to_characters(ground_truth_label_seq)))
-                print('  Prediction: {}'.format(label_indices_to_characters(pred_label_seq)))
+            # num_samples_in_batch = max(batch_indices[:, 0])
+            # for sample_id in range(num_samples_in_batch):
+            #     ground_truth_label_seq = batch_vals[batch_indices[:, 0] == sample_id]
+            #     pred_label_seq = batch_pred.values[batch_pred.indices[:, 0] == sample_id]
+            #     print('-' * 120)
+            #     print('Ground Truth: {}'.format(label_indices_to_characters(ground_truth_label_seq, label_type)))
+            #     print('  Prediction: {}'.format(label_indices_to_characters(pred_label_seq, label_type)))
 
-            print('-' * 80)
+            # for sample_id in range(num_test_samples):
+            #     ground_truth_label_seq = test_label_vals[test_label_indices[:, 0] == sample_id]
+            #     pred_label_seq = cur_test_pred.values[cur_test_pred.indices[:, 0] == sample_id]
+            #     print('-' * 120)
+            #     print('Ground Truth: {}'.format(label_indices_to_characters(ground_truth_label_seq, label_type)))
+            #     print('  Prediction: {}'.format(label_indices_to_characters(pred_label_seq, label_type)))
+            #
+            # print('-' * 120)
 
 if __name__ == '__main__':
     main()
