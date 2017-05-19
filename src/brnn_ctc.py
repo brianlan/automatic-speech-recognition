@@ -1,5 +1,6 @@
 import glob
 import os
+import time
 import sys
 
 sys.path.append('..')
@@ -7,15 +8,16 @@ sys.path.append('..')
 import numpy as np
 import tensorflow as tf
 
-from utils import label_indices_to_characters
+from utils import calc_err_rate, seq_to_single_char_strings, reduce_phoneme, sparse_repr_to_2d_list
 
 
 label_type = 'phn'
 
-num_epochs = 20
+num_epochs = 100
 batch_size = 5
 num_features = 39  # mfcc feature size
 num_rnn_hidden = 256
+num_rnn_layers = 4
 learning_rate = 0.0001
 grad_clip = 0.8
 
@@ -30,6 +32,7 @@ test_data_dir = '/home/rlan/dataset/timit_lite/mfcc/test'
 test_label_dir = '/home/rlan/dataset/timit_lite/label/test/{}'.format(label_type)
 
 TENSORBOARD_LOG_DIR = '/home/rlan/tensorboard_log/automatic-speech-recognition/'
+CHECKPOINT_DIR = '/home/rlan/model_checkpoints/automatic-speech-recognition/'
 
 
 def to_sparse_representation(label, batch_idx):
@@ -52,7 +55,7 @@ def to_sparse_representation(label, batch_idx):
     return np.array(indices), np.array(vals), np.array(shape)
 
 
-def create_batches(data, label, max_seq_length, batch_size, rand_idx):
+def create_batches(data, label, max_seq_length, batch_size, rand_idx, mode='train'):
     """Randomly split data into batches according to given batch_size and rand_idx. It is a generator.
     
     :param data: a 3-D np.array, of shape num_samples x seq_length x num_features. 
@@ -112,6 +115,15 @@ def main():
                             len(test_data),
                             range(len(test_data))))[0]  # borrow create_batch to transform test data / label
 
+    cur_unixtime = time.time()
+    cur_checkpoint_path = os.path.join(CHECKPOINT_DIR, '{:.0f}'.format(cur_unixtime))
+    if not os.path.exists(cur_checkpoint_path):
+        os.makedirs(cur_checkpoint_path)
+
+    cur_tb_summary_path = os.path.join(TENSORBOARD_LOG_DIR, '{:.0f}'.format(cur_unixtime))
+    if not os.path.exists(cur_tb_summary_path):
+        os.makedirs(cur_tb_summary_path)
+
     ##############################################
     #                Build Graph
     ##############################################
@@ -139,38 +151,43 @@ def main():
         ##################
         #     BGRU
         ##################
-        forward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
-        backward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
-
-        def brnn_layer(fw_cell, bw_cell, inputs, seq_lengths):
+        def brnn_layer(fw_cell, bw_cell, inputs, seq_lengths, scope=None):
             (output_fw, output_bw), _ = tf.nn.bidirectional_dynamic_rnn(fw_cell,
                                                                         bw_cell,
                                                                         inputs=inputs,
                                                                         dtype=tf.float32,
                                                                         sequence_length=seq_lengths,
-                                                                        time_major=True)
+                                                                        time_major=True,
+                                                                        scope=scope)
 
             brnn_combined_outputs = output_fw + output_bw
             return brnn_combined_outputs
 
+        def multi_brnn_layer(inputs, seq_lengths, num_layers=1):
+            inner_outputs = inputs
+            for n in range(num_layers):
+                forward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
+                backward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
+                inner_outputs = brnn_layer(forward_cell, backward_cell, inner_outputs, seq_lengths, 'brnn_{}'.format(n))
+
+            return inner_outputs
+
         with tf.variable_scope('rlan') as scope:
-            brnn_outputs_train = brnn_layer(forward_cell, backward_cell, X_train, seq_lengths_train)
+            brnn_outputs_train = multi_brnn_layer(X_train, seq_lengths_train, num_layers=num_rnn_layers)
             brnn_outputs_train = [tf.reshape(t, shape=(batch_size, num_rnn_hidden)) for t in
                                   tf.split(brnn_outputs_train, max_seq_length, axis=0)]
 
             scope.reuse_variables()
 
-            brnn_outputs_test = brnn_layer(forward_cell, backward_cell, X_test, seq_lengths_test)
+            brnn_outputs_test = multi_brnn_layer(X_test, seq_lengths_test, num_layers=num_rnn_layers)
             brnn_outputs_test = [tf.reshape(t, shape=(num_test_samples, num_rnn_hidden)) for t in
                                  tf.split(brnn_outputs_test, max_seq_length, axis=0)]
 
-        # TODO: [2] Merge Strategy:
-        # TODO:       shall we multiply W1 and W2 for forward and backword RNN respectively and add bias as well
-        # TODO:       as suggested by paper https://arxiv.org/pdf/1303.5778.pdf
-
-        # TODO: [3] Multiple BRNN Layers
-
-        # TODO: [4] Joint LM-acoustic Model
+        # TODO: Combine 61 phn to 39 when evaluating the err_rate (check whether it's train or test to decide whether to combine during batch data prepare phase)
+        # TODO: Learning Rate Decay
+        # TODO: Use better initialization
+        # TODO: Add BatchNorm
+        # TODO: Joint LM-acoustic Model
         ##################
         #     CTC
         ##################
@@ -192,13 +209,23 @@ def main():
         optimizer = tf.train.AdamOptimizer(learning_rate).apply_gradients(zip(grads, var_trainable_op))
 
         pred_train = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_train, seq_lengths_train, merge_repeated=False)[0][0])
-        err_rate_train = tf.reduce_mean(tf.edit_distance(pred_train, y_train, normalize=True))
+        err_rate_train = tf.reduce_mean(tf.edit_distance(pred_train,
+                                                         y_train,
+                                                         normalize=True))
+
+        # err_rate_train = tf.reduce_mean(tf.edit_distance(tf.SparseTensor(pred_train.indices,
+        #                                                                  tf.map_fn(phn_map_func, pred_train.values),
+        #                                                                  pred_train.dense_shape),
+        #                                                  tf.SparseTensor(y_train.indices,
+        #                                                                  tf.map_fn(phn_map_func, y_train.values),
+        #                                                                  y_train.dense_shape),
+        #                                                  normalize=True))
 
         pred_test = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_test, seq_lengths_test, merge_repeated=False)[0][0])
-        err_rate_test = tf.reduce_sum(tf.edit_distance(pred_test, y_test, normalize=True))
+        err_rate_test = tf.reduce_mean(tf.edit_distance(pred_test, y_test, normalize=True))
 
-        tf.summary.scalar('loss_train', loss_train)
-        tf.summary.scalar('loss_test', loss_test)
+        # tf.summary.scalar('loss_train', loss_train)
+        # tf.summary.scalar('loss_test', loss_test)
         tf.summary.scalar('err_rate_train', err_rate_train)
         tf.summary.scalar('err_rate_test', err_rate_test)
         merged = tf.summary.merge_all()
@@ -206,8 +233,9 @@ def main():
     ##############################################
     #                Run TF Session
     ##############################################
-    tb_file_writer = tf.summary.FileWriter(TENSORBOARD_LOG_DIR, graph)
+    tb_file_writer = tf.summary.FileWriter(cur_tb_summary_path, graph)
     with tf.Session(graph=graph) as sess:
+        saver = tf.train.Saver(tf.global_variables(), max_to_keep=5, keep_checkpoint_every_n_hours=1)
         tf.global_variables_initializer().run()
         num_processed_batches = 0
         for epoch in range(num_epochs):
@@ -229,15 +257,25 @@ def main():
                                         seq_lengths_test: test_seq_lengths})
 
                 num_processed_batches += 1
-                print('[epoch: {}, batch: {}] loss_train = {}, err_train = {}, loss_test = {}, err_test = {}'.format(
+                print('[epoch: {}, batch: {}] err_train = {:.4f} (phn_merged: {:.4f}), err_test = {:.4f} (phn_merged: {:.4f})'.format(
                     epoch,
                     batch,
-                    batch_loss,
                     batch_err_rate,
-                    cur_test_loss,
-                    cur_test_err_rate
+                    # calc_err_rate(seq_to_single_char_strings(sparse_repr_to_2d_list(batch_pred.indices, batch_pred.values, batch_pred.dense_shape)),
+                    #               seq_to_single_char_strings(sparse_repr_to_2d_list(batch_indices, batch_vals, batch_shape)),
+                    #               normalize=True),
+                    calc_err_rate(seq_to_single_char_strings(reduce_phoneme(batch_pred.indices, batch_pred.values, batch_pred.dense_shape)),
+                                  seq_to_single_char_strings(reduce_phoneme(batch_indices, batch_vals, batch_shape))),
+                    cur_test_err_rate,
+                    # calc_err_rate(seq_to_single_char_strings(sparse_repr_to_2d_list(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape)),
+                    #               seq_to_single_char_strings(sparse_repr_to_2d_list(test_label_indices, test_label_vals, test_label_shape)),
+                    #               normalize=True)
+                    calc_err_rate(seq_to_single_char_strings(reduce_phoneme(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape)),
+                                  seq_to_single_char_strings(reduce_phoneme(test_label_indices, test_label_vals, test_label_shape)))
                 ))
                 tb_file_writer.add_summary(summary, num_processed_batches)
+
+            saver.save(sess, os.path.join(cur_checkpoint_path, 'model'), global_step=epoch)
 
             # num_samples_in_batch = max(batch_indices[:, 0])
             # for sample_id in range(num_samples_in_batch):
@@ -255,6 +293,7 @@ def main():
             #     print('  Prediction: {}'.format(label_indices_to_characters(pred_label_seq, label_type)))
             #
             # print('-' * 120)
+
 
 if __name__ == '__main__':
     main()
