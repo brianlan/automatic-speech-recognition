@@ -14,11 +14,11 @@ from utils import calc_err_rate, seq_to_single_char_strings, reduce_phoneme, spa
 label_type = 'phn'
 
 num_epochs = 100
-batch_size = 5
+batch_size = 30
 num_features = 39  # mfcc feature size
-num_rnn_hidden = 256
-num_rnn_layers = 4
-learning_rate = 0.0001
+num_rnn_hidden = 128
+num_rnn_layers = 2
+learning_rate = 0.0003
 grad_clip = 0.8
 
 if label_type == 'phn':
@@ -26,10 +26,10 @@ if label_type == 'phn':
 elif label_type == 'cha':
     num_classes = 29
 
-train_data_dir = '/home/rlan/dataset/timit_lite/mfcc/train'
-train_label_dir = '/home/rlan/dataset/timit_lite/label/train/{}'.format(label_type)
-test_data_dir = '/home/rlan/dataset/timit_lite/mfcc/test'
-test_label_dir = '/home/rlan/dataset/timit_lite/label/test/{}'.format(label_type)
+train_data_dir = '/home/rlan/dataset/timit/mfcc/train'
+train_label_dir = '/home/rlan/dataset/timit/label/train/{}'.format(label_type)
+test_data_dir = '/home/rlan/dataset/timit/mfcc/test'
+test_label_dir = '/home/rlan/dataset/timit/label/test/{}'.format(label_type)
 
 TENSORBOARD_LOG_DIR = '/home/rlan/tensorboard_log/automatic-speech-recognition/'
 CHECKPOINT_DIR = '/home/rlan/model_checkpoints/automatic-speech-recognition/'
@@ -82,6 +82,40 @@ def create_batches(data, label, max_seq_length, batch_size, rand_idx, mode='trai
         yield ((data_in_batch, seq_lengths), label_in_batch)
 
 
+def normalize(X, miu=None, std=None):
+    if miu is None or std is None:
+        mode = 'train'
+        miu = []
+        std = []
+    else:
+        mode = 'test'
+
+    for f in range(num_features):
+        full_features = []
+
+        if mode == 'train':
+            for d in X:
+                full_features.extend(d[:, f])
+
+            miu.append(np.mean(full_features))
+            std.append(np.std(full_features))
+
+        for n in range(len(X)):
+            X[n][:, f] = (X[n][:, f] - miu[f]) / std[f]
+
+    return miu, std
+
+
+def sort_by_length(X, axis=1):
+    lengths = [x.shape[axis] for x in X]
+    perm = np.argsort(lengths)
+    sorted_X = []
+    for i in perm:
+        sorted_X.append(X[i])
+
+    return sorted_X
+
+
 def main():
     ##############################################
     #                Load Data
@@ -93,11 +127,16 @@ def main():
     for fname in glob.glob(os.path.join(train_data_dir, '*.npy')):
         train_data.append(np.load(fname))
 
+    miu, std = normalize(train_data)
+    train_data = sort_by_length(train_data)
+
     for fname in glob.glob(os.path.join(train_label_dir, '*.npy')):
         train_label.append(np.load(fname))
 
     for fname in glob.glob(os.path.join(test_data_dir, '*.npy')):
         test_data.append(np.load(fname))
+
+    normalize(test_data, miu=miu, std=std)
 
     for fname in glob.glob(os.path.join(test_label_dir, '*.npy')):
         test_label.append(np.load(fname))
@@ -112,8 +151,8 @@ def main():
         list(create_batches(test_data,
                             test_label,
                             max_seq_length,
-                            len(test_data),
-                            range(len(test_data))))[0]  # borrow create_batch to transform test data / label
+                            num_test_samples,
+                            range(num_test_samples)))[0]  # borrow create_batch to transform test data / label
 
     cur_unixtime = time.time()
     cur_checkpoint_path = os.path.join(CHECKPOINT_DIR, '{:.0f}'.format(cur_unixtime))
@@ -183,11 +222,11 @@ def main():
             brnn_outputs_test = [tf.reshape(t, shape=(num_test_samples, num_rnn_hidden)) for t in
                                  tf.split(brnn_outputs_test, max_seq_length, axis=0)]
 
-        # TODO: Combine 61 phn to 39 when evaluating the err_rate (check whether it's train or test to decide whether to combine during batch data prepare phase)
         # TODO: Learning Rate Decay
         # TODO: Use better initialization
         # TODO: Add BatchNorm
         # TODO: Joint LM-acoustic Model
+        # TODO: Implement Demo (audio => text)
         ##################
         #     CTC
         ##################
@@ -205,7 +244,8 @@ def main():
         loss_test = tf.reduce_mean(tf.nn.ctc_loss(y_test, logits3d_test, seq_lengths_test))
 
         var_trainable_op = tf.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(tf.gradients(loss_train, var_trainable_op), grad_clip)
+        # grads, _ = tf.clip_by_global_norm(tf.gradients(loss_train, var_trainable_op), grad_clip)
+        grads = tf.gradients(loss_train, var_trainable_op)
         optimizer = tf.train.AdamOptimizer(learning_rate).apply_gradients(zip(grads, var_trainable_op))
 
         pred_train = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_train, seq_lengths_train, merge_repeated=False)[0][0])
@@ -234,13 +274,16 @@ def main():
     #                Run TF Session
     ##############################################
     tb_file_writer = tf.summary.FileWriter(cur_tb_summary_path, graph)
-    with tf.Session(graph=graph) as sess:
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    with tf.Session(graph=graph, config=config) as sess:
         saver = tf.train.Saver(tf.global_variables(), max_to_keep=5, keep_checkpoint_every_n_hours=1)
         tf.global_variables_initializer().run()
         num_processed_batches = 0
         for epoch in range(num_epochs):
             num_samples = len(train_data)
-            batches = create_batches(train_data, train_label, max_seq_length, batch_size, np.random.permutation(num_samples))
+            perm = range(num_samples) if epoch == 0 else np.random.permutation(num_samples)
+            batches = create_batches(train_data, train_label, max_seq_length, batch_size, perm)
 
             for batch, ((batch_data, batch_seq_lengths), (batch_indices, batch_vals, batch_shape)) in enumerate(batches):
                 _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred, summary = \

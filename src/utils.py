@@ -82,7 +82,13 @@ def reduce_phoneme(indices, vals, shape):
     it = 0
     num_samples = np.max(indices, axis=0)[0] + 1
     for n in range(num_samples):
-        seq_length = np.max(indices[indices[:, 0] == n, 1]) + 1
+        cur_sample_indices = indices[indices[:, 0] == n, 1]
+
+        if len(cur_sample_indices) == 0:
+            seq_length = 0
+        else:
+            seq_length = np.max(cur_sample_indices) + 1
+
         seq = vals[it:it+seq_length]
         reduced_seq = [KAIFU_LEE_IDX_MAPPING[p] for p in seq]
         phonemes_list.append(reduced_seq)
