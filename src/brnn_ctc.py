@@ -14,22 +14,22 @@ from utils import calc_err_rate, seq_to_single_char_strings, reduce_phoneme, spa
 label_type = 'phn'
 
 num_epochs = 100
-batch_size = 30
+batch_size = 33
 num_features = 39  # mfcc feature size
-num_rnn_hidden = 128
+num_rnn_hidden = 256
 num_rnn_layers = 2
-learning_rate = 0.0003
-grad_clip = 0.8
+learning_rate = 0.0001
+grad_clip = 1.0
 
 if label_type == 'phn':
     num_classes = 62
 elif label_type == 'cha':
     num_classes = 29
 
-train_data_dir = '/home/rlan/dataset/timit/mfcc/train'
-train_label_dir = '/home/rlan/dataset/timit/label/train/{}'.format(label_type)
-test_data_dir = '/home/rlan/dataset/timit/mfcc/test'
-test_label_dir = '/home/rlan/dataset/timit/label/test/{}'.format(label_type)
+train_data_dir = '/home/rlan/dataset/timit_rm_sa/mfcc/train'
+train_label_dir = '/home/rlan/dataset/timit_rm_sa/label/train/{}'.format(label_type)
+test_data_dir = '/home/rlan/dataset/timit_rm_sa/mfcc/test'
+test_label_dir = '/home/rlan/dataset/timit_rm_sa/label/test/{}'.format(label_type)
 
 TENSORBOARD_LOG_DIR = '/home/rlan/tensorboard_log/automatic-speech-recognition/'
 CHECKPOINT_DIR = '/home/rlan/model_checkpoints/automatic-speech-recognition/'
@@ -216,11 +216,11 @@ def main():
             brnn_outputs_train = [tf.reshape(t, shape=(batch_size, num_rnn_hidden)) for t in
                                   tf.split(brnn_outputs_train, max_seq_length, axis=0)]
 
-            scope.reuse_variables()
-
-            brnn_outputs_test = multi_brnn_layer(X_test, seq_lengths_test, num_layers=num_rnn_layers)
-            brnn_outputs_test = [tf.reshape(t, shape=(num_test_samples, num_rnn_hidden)) for t in
-                                 tf.split(brnn_outputs_test, max_seq_length, axis=0)]
+            # scope.reuse_variables()
+            #
+            # brnn_outputs_test = multi_brnn_layer(X_test, seq_lengths_test, num_layers=num_rnn_layers)
+            # brnn_outputs_test = [tf.reshape(t, shape=(num_test_samples, num_rnn_hidden)) for t in
+            #                      tf.split(brnn_outputs_test, max_seq_length, axis=0)]
 
         # TODO: Learning Rate Decay
         # TODO: Use better initialization
@@ -237,11 +237,11 @@ def main():
         logits_train = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_train]
         logits3d_train = tf.stack(logits_train)
 
-        logits_test = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_test]
-        logits3d_test = tf.stack(logits_test)
+        # logits_test = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_test]
+        # logits3d_test = tf.stack(logits_test)
 
         loss_train = tf.reduce_mean(tf.nn.ctc_loss(y_train, logits3d_train, seq_lengths_train))
-        loss_test = tf.reduce_mean(tf.nn.ctc_loss(y_test, logits3d_test, seq_lengths_test))
+        # loss_test = tf.reduce_mean(tf.nn.ctc_loss(y_test, logits3d_test, seq_lengths_test))
 
         var_trainable_op = tf.trainable_variables()
         # grads, _ = tf.clip_by_global_norm(tf.gradients(loss_train, var_trainable_op), grad_clip)
@@ -261,13 +261,13 @@ def main():
         #                                                                  y_train.dense_shape),
         #                                                  normalize=True))
 
-        pred_test = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_test, seq_lengths_test, merge_repeated=False)[0][0])
-        err_rate_test = tf.reduce_mean(tf.edit_distance(pred_test, y_test, normalize=True))
+        # pred_test = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_test, seq_lengths_test, merge_repeated=False)[0][0])
+        # err_rate_test = tf.reduce_mean(tf.edit_distance(pred_test, y_test, normalize=True))
 
         # tf.summary.scalar('loss_train', loss_train)
         # tf.summary.scalar('loss_test', loss_test)
         tf.summary.scalar('err_rate_train', err_rate_train)
-        tf.summary.scalar('err_rate_test', err_rate_test)
+        # tf.summary.scalar('err_rate_test', err_rate_test)
         merged = tf.summary.merge_all()
 
     ##############################################
@@ -286,35 +286,37 @@ def main():
             batches = create_batches(train_data, train_label, max_seq_length, batch_size, perm)
 
             for batch, ((batch_data, batch_seq_lengths), (batch_indices, batch_vals, batch_shape)) in enumerate(batches):
-                _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred, summary = \
-                    sess.run([optimizer, loss_train, err_rate_train, pred_train, loss_test, err_rate_test, pred_test, merged],
+                _, batch_loss, batch_err_rate, batch_pred, summary = \
+                    sess.run([optimizer, loss_train, err_rate_train, pred_train, merged],
                              feed_dict={X_train: batch_data,
                                         y_train_indices: batch_indices,
                                         y_train_vals: batch_vals,
                                         y_train_shape: batch_shape,
-                                        seq_lengths_train: batch_seq_lengths,
-                                        X_test: test_data_tensor,
-                                        y_test_indices: test_label_indices,
-                                        y_test_vals: test_label_vals,
-                                        y_test_shape: test_label_shape,
-                                        seq_lengths_test: test_seq_lengths})
+                                        seq_lengths_train: batch_seq_lengths})
+                # _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred, summary = \
+                #     sess.run([optimizer, loss_train, err_rate_train, pred_train, loss_test, err_rate_test, pred_test, merged],
+                #              feed_dict={X_train: batch_data,
+                #                         y_train_indices: batch_indices,
+                #                         y_train_vals: batch_vals,
+                #                         y_train_shape: batch_shape,
+                #                         seq_lengths_train: batch_seq_lengths,
+                #                         X_test: test_data_tensor,
+                #                         y_test_indices: test_label_indices,
+                #                         y_test_vals: test_label_vals,
+                #                         y_test_shape: test_label_shape,
+                #                         seq_lengths_test: test_seq_lengths})
 
                 num_processed_batches += 1
-                print('[epoch: {}, batch: {}] err_train = {:.4f} (phn_merged: {:.4f}), err_test = {:.4f} (phn_merged: {:.4f})'.format(
+                # err_test = {:.4f} (phn_merged: {:.4f}
+                print('[epoch: {}, batch: {}] err_train = {:.4f} (phn_merged: {:.4f}))'.format(
                     epoch,
                     batch,
                     batch_err_rate,
-                    # calc_err_rate(seq_to_single_char_strings(sparse_repr_to_2d_list(batch_pred.indices, batch_pred.values, batch_pred.dense_shape)),
-                    #               seq_to_single_char_strings(sparse_repr_to_2d_list(batch_indices, batch_vals, batch_shape)),
-                    #               normalize=True),
                     calc_err_rate(seq_to_single_char_strings(reduce_phoneme(batch_pred.indices, batch_pred.values, batch_pred.dense_shape)),
                                   seq_to_single_char_strings(reduce_phoneme(batch_indices, batch_vals, batch_shape))),
-                    cur_test_err_rate,
-                    # calc_err_rate(seq_to_single_char_strings(sparse_repr_to_2d_list(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape)),
-                    #               seq_to_single_char_strings(sparse_repr_to_2d_list(test_label_indices, test_label_vals, test_label_shape)),
-                    #               normalize=True)
-                    calc_err_rate(seq_to_single_char_strings(reduce_phoneme(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape)),
-                                  seq_to_single_char_strings(reduce_phoneme(test_label_indices, test_label_vals, test_label_shape)))
+                    # cur_test_err_rate,
+                    # calc_err_rate(seq_to_single_char_strings(reduce_phoneme(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape)),
+                    #               seq_to_single_char_strings(reduce_phoneme(test_label_indices, test_label_vals, test_label_shape)))
                 ))
                 tb_file_writer.add_summary(summary, num_processed_batches)
 
