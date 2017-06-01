@@ -8,7 +8,7 @@ sys.path.append('..')
 import numpy as np
 import tensorflow as tf
 
-from utils import calc_err_rate, seq_to_single_char_strings, reduce_phoneme, sparse_repr_to_2d_list
+from utils import SparseTensor, calc_PER
 
 
 label_type = 'phn'
@@ -114,6 +114,17 @@ def sort_by_length(X, axis=1):
         sorted_X.append(X[i])
 
     return sorted_X
+
+
+def batchnorm_layer(X, offset, scale, is_test, iteration):
+    exp_moving_avg = tf.train.ExponentialMovingAverage(0.998, iteration) # adding the iteration prevents from averaging across non-existing iterations
+    bnepsilon = 1e-5
+    mean, variance = tf.nn.moments(X, [0])
+    update_moving_everages = exp_moving_avg.apply([mean, variance])
+    m = tf.cond(is_test, lambda: exp_moving_avg.average(mean), lambda: mean)
+    v = tf.cond(is_test, lambda: exp_moving_avg.average(variance), lambda: variance)
+    Xbn = tf.nn.batch_normalization(X, m, v, offset, scale, bnepsilon)
+    return Xbn, update_moving_everages
 
 
 def main():
@@ -312,8 +323,8 @@ def main():
                     epoch,
                     batch,
                     batch_err_rate,
-                    calc_err_rate(seq_to_single_char_strings(reduce_phoneme(batch_pred.indices, batch_pred.values, batch_pred.dense_shape)),
-                                  seq_to_single_char_strings(reduce_phoneme(batch_indices, batch_vals, batch_shape))),
+                    calc_PER(SparseTensor(batch_pred.indices, batch_pred.values, batch_pred.dense_shape),
+                             SparseTensor(batch_indices, batch_vals, batch_shape)),
                     # cur_test_err_rate,
                     # calc_err_rate(seq_to_single_char_strings(reduce_phoneme(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape)),
                     #               seq_to_single_char_strings(reduce_phoneme(test_label_indices, test_label_vals, test_label_shape)))
