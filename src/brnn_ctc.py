@@ -9,17 +9,21 @@ import numpy as np
 import tensorflow as tf
 
 from utils import SparseTensor, calc_PER
+from helpers import RNNCellHelper
 
 
 label_type = 'phn'
 
-num_epochs = 100
-batch_size = 33
+num_epochs = 400
+batch_size = 32
 num_features = 39  # mfcc feature size
 num_rnn_hidden = 256
-num_rnn_layers = 2
+num_rnn_layers = 4
 learning_rate = 0.0001
 grad_clip = 1.0
+
+rnn_cell_fn = RNNCellHelper.make_cell_fn('gru')
+rnn_cell_activation_fn = RNNCellHelper.make_cell_activation_fn('tanh')
 
 if label_type == 'phn':
     num_classes = 62
@@ -216,8 +220,8 @@ def main():
         def multi_brnn_layer(inputs, seq_lengths, num_layers=1):
             inner_outputs = inputs
             for n in range(num_layers):
-                forward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
-                backward_cell = tf.contrib.rnn.GRUCell(num_rnn_hidden, tf.nn.tanh)
+                forward_cell = rnn_cell_fn(num_rnn_hidden, activation=rnn_cell_activation_fn)
+                backward_cell = rnn_cell_fn(num_rnn_hidden, activation=rnn_cell_activation_fn)
                 inner_outputs = brnn_layer(forward_cell, backward_cell, inner_outputs, seq_lengths, 'brnn_{}'.format(n))
 
             return inner_outputs
@@ -242,10 +246,12 @@ def main():
         #     CTC
         ##################
         # with tf.variable_scope("ctc") as scope:
-        fc_W = tf.get_variable('fc_W', initializer=tf.truncated_normal([num_rnn_hidden, num_classes]))
-        fc_b = tf.get_variable('fc_b', initializer=tf.truncated_normal([num_classes]))
+        with tf.name_scope('fc-layer'):
+            fc_W = tf.get_variable('fc_W', initializer=tf.truncated_normal([num_rnn_hidden, num_classes]))
+            fc_b = tf.get_variable('fc_b', initializer=tf.truncated_normal([num_classes]))
 
-        logits_train = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_train]
+            logits_train = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_train]
+
         logits3d_train = tf.stack(logits_train)
 
         # logits_test = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_test]
@@ -255,8 +261,7 @@ def main():
         # loss_test = tf.reduce_mean(tf.nn.ctc_loss(y_test, logits3d_test, seq_lengths_test))
 
         var_trainable_op = tf.trainable_variables()
-        # grads, _ = tf.clip_by_global_norm(tf.gradients(loss_train, var_trainable_op), grad_clip)
-        grads = tf.gradients(loss_train, var_trainable_op)
+        grads, _ = tf.clip_by_global_norm(tf.gradients(loss_train, var_trainable_op), grad_clip)
         optimizer = tf.train.AdamOptimizer(learning_rate).apply_gradients(zip(grads, var_trainable_op))
 
         pred_train = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_train, seq_lengths_train, merge_repeated=False)[0][0])
