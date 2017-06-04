@@ -17,9 +17,10 @@ label_type = 'phn'
 num_epochs = 400
 batch_size = 32
 num_features = 39  # mfcc feature size
-num_rnn_hidden = 256
-num_rnn_layers = 4
-learning_rate = 0.0001
+num_rnn_hidden = 200
+num_rnn_layers = 3
+learning_rate = 0.0003
+keep_prob = 0.9
 grad_clip = 1.0
 
 rnn_cell_fn = RNNCellHelper.make_cell_fn('gru')
@@ -217,17 +218,18 @@ def main():
             brnn_combined_outputs = output_fw + output_bw
             return brnn_combined_outputs
 
-        def multi_brnn_layer(inputs, seq_lengths, num_layers=1):
+        def multi_brnn_layer(inputs, seq_lengths, num_layers, is_training, use_dropout=True, keep_prob=0.5):
             inner_outputs = inputs
             for n in range(num_layers):
                 forward_cell = rnn_cell_fn(num_rnn_hidden, activation=rnn_cell_activation_fn)
                 backward_cell = rnn_cell_fn(num_rnn_hidden, activation=rnn_cell_activation_fn)
                 inner_outputs = brnn_layer(forward_cell, backward_cell, inner_outputs, seq_lengths, 'brnn_{}'.format(n))
+                inner_outputs = tf.contrib.layers.dropout(inner_outputs, keep_prob=keep_prob, is_training=is_training)
 
             return inner_outputs
 
         with tf.variable_scope('rlan') as scope:
-            brnn_outputs_train = multi_brnn_layer(X_train, seq_lengths_train, num_layers=num_rnn_layers)
+            brnn_outputs_train = multi_brnn_layer(X_train, seq_lengths_train, num_rnn_layers, True, keep_prob=keep_prob)
             brnn_outputs_train = [tf.reshape(t, shape=(batch_size, num_rnn_hidden)) for t in
                                   tf.split(brnn_outputs_train, max_seq_length, axis=0)]
 
@@ -245,12 +247,11 @@ def main():
         ##################
         #     CTC
         ##################
-        # with tf.variable_scope("ctc") as scope:
-        with tf.name_scope('fc-layer'):
-            fc_W = tf.get_variable('fc_W', initializer=tf.truncated_normal([num_rnn_hidden, num_classes]))
-            fc_b = tf.get_variable('fc_b', initializer=tf.truncated_normal([num_classes]))
+        # with tf.name_scope('fc-layer'):
+        fc_W = tf.get_variable('fc_W', initializer=tf.truncated_normal([num_rnn_hidden, num_classes]))
+        fc_b = tf.get_variable('fc_b', initializer=tf.truncated_normal([num_classes]))
 
-            logits_train = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_train]
+        logits_train = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_train]
 
         logits3d_train = tf.stack(logits_train)
 
