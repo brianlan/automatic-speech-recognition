@@ -8,7 +8,7 @@ sys.path.append('..')
 import numpy as np
 import tensorflow as tf
 
-from utils import SparseTensor, calc_PER
+from utils.PER_merge_phn import SparseTensor, calc_PER
 from helpers import RNNCellHelper
 
 
@@ -17,9 +17,9 @@ label_type = 'phn'
 num_epochs = 400
 batch_size = 32
 num_features = 39  # mfcc feature size
-num_rnn_hidden = 200
-num_rnn_layers = 3
-learning_rate = 0.0003
+num_rnn_hidden = 256
+num_rnn_layers = 4
+learning_rate = 0.001
 keep_prob = 0.9
 grad_clip = 1.0
 
@@ -224,7 +224,9 @@ def main():
                 forward_cell = rnn_cell_fn(num_rnn_hidden, activation=rnn_cell_activation_fn)
                 backward_cell = rnn_cell_fn(num_rnn_hidden, activation=rnn_cell_activation_fn)
                 inner_outputs = brnn_layer(forward_cell, backward_cell, inner_outputs, seq_lengths, 'brnn_{}'.format(n))
-                inner_outputs = tf.contrib.layers.dropout(inner_outputs, keep_prob=keep_prob, is_training=is_training)
+
+                if use_dropout:
+                    inner_outputs = tf.contrib.layers.dropout(inner_outputs, keep_prob=keep_prob, is_training=is_training)
 
             return inner_outputs
 

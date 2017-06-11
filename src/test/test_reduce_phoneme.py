@@ -1,5 +1,5 @@
 import numpy as np
-from ..utils import calc_err_rate, reduce_phoneme, seq_to_single_char_strings
+from ..utils.PER_merge_phn import calc_err_rate, reduce_phoneme, seq_to_single_char_strings
 
 
 def test_reduce_phoneme():
