@@ -1,6 +1,8 @@
 # Automatic Speech Recognition Using TensorFlow
 Code is writen in Python 2.7, TensorFlow 1.0.
-The high-level structure is demonstrated in below figure. 
+The high-level network structure is demonstrated in below figure. 
+
+<img src="https://github.com/brianlan/automatic-speech-recognition/blob/master/ASR%20Network%20Structure.PNG" width="480">
 
 ## Dataset
 The dataset used in this repo is TIMIT. The training set contains sentences, while the test set contains sentences. 
