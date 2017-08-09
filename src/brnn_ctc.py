@@ -27,7 +27,7 @@ rnn_cell_fn = RNNCellHelper.make_cell_fn('gru')
 rnn_cell_activation_fn = RNNCellHelper.make_cell_activation_fn('tanh')
 
 if label_type == 'phn':
-    num_classes = 62
+    num_classes = 62  # there's only 61 phn, but it is 62 here because there's 1 more special class - BLANK.
 elif label_type == 'cha':
     num_classes = 29
 
