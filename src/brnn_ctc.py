@@ -10,6 +10,7 @@ import tensorflow as tf
 
 from utils.PER_merge_phn import SparseTensor, calc_PER
 from helpers import RNNCellHelper
+from utils.utils import now
 
 
 label_type = 'phn'
@@ -35,6 +36,7 @@ train_data_dir = '/home/rlan/dataset/timit_rm_sa/mfcc/train'
 train_label_dir = '/home/rlan/dataset/timit_rm_sa/label/train/{}'.format(label_type)
 test_data_dir = '/home/rlan/dataset/timit_rm_sa/mfcc/test'
 test_label_dir = '/home/rlan/dataset/timit_rm_sa/label/test/{}'.format(label_type)
+result_file_name = 'results.csv'
 
 TENSORBOARD_LOG_DIR = '/home/rlan/tensorboard_log/automatic-speech-recognition/'
 CHECKPOINT_DIR = '/home/rlan/model_checkpoints/automatic-speech-recognition/'
@@ -272,27 +274,19 @@ def main():
                                                          y_train,
                                                          normalize=True))
 
-        # err_rate_train = tf.reduce_mean(tf.edit_distance(tf.SparseTensor(pred_train.indices,
-        #                                                                  tf.map_fn(phn_map_func, pred_train.values),
-        #                                                                  pred_train.dense_shape),
-        #                                                  tf.SparseTensor(y_train.indices,
-        #                                                                  tf.map_fn(phn_map_func, y_train.values),
-        #                                                                  y_train.dense_shape),
-        #                                                  normalize=True))
-
         pred_test = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_test, seq_lengths_test, merge_repeated=False)[0][0])
         err_rate_test = tf.reduce_mean(tf.edit_distance(pred_test, y_test, normalize=True))
 
         # tf.summary.scalar('loss_train', loss_train)
         # tf.summary.scalar('loss_test', loss_test)
-        tf.summary.scalar('err_rate_train', err_rate_train)
-        tf.summary.scalar('err_rate_test', err_rate_test)
-        merged = tf.summary.merge_all()
+        # tf.summary.scalar('err_rate_train', err_rate_train)
+        # tf.summary.scalar('err_rate_test', err_rate_test)
+        # merged = tf.summary.merge_all()
 
     ##############################################
     #                Run TF Session
     ##############################################
-    tb_file_writer = tf.summary.FileWriter(cur_tb_summary_path, graph)
+    # tb_file_writer = tf.summary.FileWriter(cur_tb_summary_path, graph)
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     with tf.Session(graph=graph, config=config) as sess:
@@ -305,63 +299,56 @@ def main():
             batches = create_batches(train_data, train_label, max_seq_length, batch_size, perm)
 
             for batch, ((batch_data, batch_seq_lengths), (batch_indices, batch_vals, batch_shape)) in enumerate(batches):
-                # _, batch_loss, batch_err_rate, batch_pred, summary = \
-                #     sess.run([optimizer, loss_train, err_rate_train, pred_train, merged],
-                #              feed_dict={X_train: batch_data,
-                #                         y_train_indices: batch_indices,
-                #                         y_train_vals: batch_vals,
-                #                         y_train_shape: batch_shape,
-                #                         seq_lengths_train: batch_seq_lengths})
-                _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred, summary = \
-                    sess.run([optimizer, loss_train, err_rate_train, pred_train, loss_test, err_rate_test, pred_test, merged],
-                             feed_dict={X_train: batch_data,
-                                        y_train_indices: batch_indices,
-                                        y_train_vals: batch_vals,
-                                        y_train_shape: batch_shape,
-                                        seq_lengths_train: batch_seq_lengths,
-                                        X_test: test_data_tensor,
-                                        y_test_indices: test_label_indices,
-                                        y_test_vals: test_label_vals,
-                                        y_test_shape: test_label_shape,
-                                        seq_lengths_test: test_seq_lengths})
-
                 num_processed_batches += 1
+                if epoch > 0 and batch == 0:
+                    _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred = \
+                        sess.run(
+                            [optimizer, loss_train, err_rate_train, pred_train, loss_test, err_rate_test, pred_test],
+                            feed_dict={X_train: batch_data,
+                                       y_train_indices: batch_indices,
+                                       y_train_vals: batch_vals,
+                                       y_train_shape: batch_shape,
+                                       seq_lengths_train: batch_seq_lengths,
+                                       X_test: test_data_tensor,
+                                       y_test_indices: test_label_indices,
+                                       y_test_vals: test_label_vals,
+                                       y_test_shape: test_label_shape,
+                                       seq_lengths_test: test_seq_lengths})
 
-                merged_train_per = calc_PER(SparseTensor(batch_pred.indices, batch_pred.values, batch_pred.dense_shape),
-                                            SparseTensor(batch_indices, batch_vals, batch_shape))
-                merged_test_per = calc_PER(SparseTensor(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape),
-                                           SparseTensor(test_label_indices, test_label_vals, test_label_shape))
+                    merged_train_per = calc_PER(SparseTensor(batch_pred.indices, batch_pred.values, batch_pred.dense_shape),
+                                                SparseTensor(batch_indices, batch_vals, batch_shape))
+                    merged_test_per = calc_PER(SparseTensor(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape),
+                                               SparseTensor(test_label_indices, test_label_vals, test_label_shape))
 
-                print('[epoch: {}, batch: {}] err_train = {:.4f} (phn_merged: {:.4f}))'.format(epoch,
-                                                                                               batch,
-                                                                                               batch_err_rate,
-                                                                                               merged_train_per,
-                                                                                               merged_test_per))
+                    with open(result_file_name, 'a') as f:
+                        f.write('{},{},{},{},{},{},{},{}\n'.format(now(), epoch, batch, num_processed_batches,
+                                                                   batch_err_rate, merged_train_per, cur_test_err_rate,
+                                                                   merged_test_per))
 
-                with open('results.csv', 'a') as f:
-                    f.write('{},{},{},{},{},{},{}\n'.format(epoch, batch, num_processed_batches, batch_err_rate,
-                                                            merged_train_per, cur_test_err_rate, merged_test_per))
+                    print('[epoch: {}, batch: {}] err_train = {:.4f} (phn_merged: {:.4f}))'.format(epoch,
+                                                                                                   batch,
+                                                                                                   batch_err_rate,
+                                                                                                   merged_train_per,
+                                                                                                   merged_test_per))
+                else:
+                    _, batch_loss, batch_err_rate, batch_pred = \
+                        sess.run([optimizer, loss_train, err_rate_train, pred_train],
+                                 feed_dict={X_train: batch_data,
+                                            y_train_indices: batch_indices,
+                                            y_train_vals: batch_vals,
+                                            y_train_shape: batch_shape,
+                                            seq_lengths_train: batch_seq_lengths})
 
-                tb_file_writer.add_summary(summary, num_processed_batches)
+                    merged_train_per = calc_PER(SparseTensor(batch_pred.indices, batch_pred.values, batch_pred.dense_shape),
+                                                SparseTensor(batch_indices, batch_vals, batch_shape))
+
+                    with open(result_file_name, 'a') as f:
+                        f.write('{},{},{},{},{},{},,\n'.format(now(), epoch, batch, num_processed_batches,
+                                                               batch_err_rate, merged_train_per))
+
+                # tb_file_writer.add_summary(summary, num_processed_batches)
 
             saver.save(sess, os.path.join(cur_checkpoint_path, 'model'), global_step=epoch)
-
-            # num_samples_in_batch = max(batch_indices[:, 0])
-            # for sample_id in range(num_samples_in_batch):
-            #     ground_truth_label_seq = batch_vals[batch_indices[:, 0] == sample_id]
-            #     pred_label_seq = batch_pred.values[batch_pred.indices[:, 0] == sample_id]
-            #     print('-' * 120)
-            #     print('Ground Truth: {}'.format(label_indices_to_characters(ground_truth_label_seq, label_type)))
-            #     print('  Prediction: {}'.format(label_indices_to_characters(pred_label_seq, label_type)))
-
-            # for sample_id in range(num_test_samples):
-            #     ground_truth_label_seq = test_label_vals[test_label_indices[:, 0] == sample_id]
-            #     pred_label_seq = cur_test_pred.values[cur_test_pred.indices[:, 0] == sample_id]
-            #     print('-' * 120)
-            #     print('Ground Truth: {}'.format(label_indices_to_characters(ground_truth_label_seq, label_type)))
-            #     print('  Prediction: {}'.format(label_indices_to_characters(pred_label_seq, label_type)))
-            #
-            # print('-' * 120)
 
 
 if __name__ == '__main__':
