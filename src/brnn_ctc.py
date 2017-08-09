@@ -235,11 +235,11 @@ def main():
             brnn_outputs_train = [tf.reshape(t, shape=(batch_size, num_rnn_hidden)) for t in
                                   tf.split(brnn_outputs_train, max_seq_length, axis=0)]
 
-            # scope.reuse_variables()
-            #
-            # brnn_outputs_test = multi_brnn_layer(X_test, seq_lengths_test, num_layers=num_rnn_layers)
-            # brnn_outputs_test = [tf.reshape(t, shape=(num_test_samples, num_rnn_hidden)) for t in
-            #                      tf.split(brnn_outputs_test, max_seq_length, axis=0)]
+            scope.reuse_variables()
+
+            brnn_outputs_test = multi_brnn_layer(X_test, seq_lengths_test, num_rnn_layers, False, keep_prob=keep_prob)
+            brnn_outputs_test = [tf.reshape(t, shape=(num_test_samples, num_rnn_hidden)) for t in
+                                 tf.split(brnn_outputs_test, max_seq_length, axis=0)]
 
         # TODO: Learning Rate Decay
         # TODO: Use better initialization
@@ -257,11 +257,11 @@ def main():
 
         logits3d_train = tf.stack(logits_train)
 
-        # logits_test = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_test]
-        # logits3d_test = tf.stack(logits_test)
+        logits_test = [tf.matmul(output, fc_W) + fc_b for output in brnn_outputs_test]
+        logits3d_test = tf.stack(logits_test)
 
         loss_train = tf.reduce_mean(tf.nn.ctc_loss(y_train, logits3d_train, seq_lengths_train))
-        # loss_test = tf.reduce_mean(tf.nn.ctc_loss(y_test, logits3d_test, seq_lengths_test))
+        loss_test = tf.reduce_mean(tf.nn.ctc_loss(y_test, logits3d_test, seq_lengths_test))
 
         var_trainable_op = tf.trainable_variables()
         grads, _ = tf.clip_by_global_norm(tf.gradients(loss_train, var_trainable_op), grad_clip)
@@ -280,13 +280,13 @@ def main():
         #                                                                  y_train.dense_shape),
         #                                                  normalize=True))
 
-        # pred_test = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_test, seq_lengths_test, merge_repeated=False)[0][0])
-        # err_rate_test = tf.reduce_mean(tf.edit_distance(pred_test, y_test, normalize=True))
+        pred_test = tf.to_int32(tf.nn.ctc_beam_search_decoder(logits3d_test, seq_lengths_test, merge_repeated=False)[0][0])
+        err_rate_test = tf.reduce_mean(tf.edit_distance(pred_test, y_test, normalize=True))
 
         # tf.summary.scalar('loss_train', loss_train)
         # tf.summary.scalar('loss_test', loss_test)
         tf.summary.scalar('err_rate_train', err_rate_train)
-        # tf.summary.scalar('err_rate_test', err_rate_test)
+        tf.summary.scalar('err_rate_test', err_rate_test)
         merged = tf.summary.merge_all()
 
     ##############################################
@@ -305,38 +305,43 @@ def main():
             batches = create_batches(train_data, train_label, max_seq_length, batch_size, perm)
 
             for batch, ((batch_data, batch_seq_lengths), (batch_indices, batch_vals, batch_shape)) in enumerate(batches):
-                _, batch_loss, batch_err_rate, batch_pred, summary = \
-                    sess.run([optimizer, loss_train, err_rate_train, pred_train, merged],
-                             feed_dict={X_train: batch_data,
-                                        y_train_indices: batch_indices,
-                                        y_train_vals: batch_vals,
-                                        y_train_shape: batch_shape,
-                                        seq_lengths_train: batch_seq_lengths})
-                # _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred, summary = \
-                #     sess.run([optimizer, loss_train, err_rate_train, pred_train, loss_test, err_rate_test, pred_test, merged],
+                # _, batch_loss, batch_err_rate, batch_pred, summary = \
+                #     sess.run([optimizer, loss_train, err_rate_train, pred_train, merged],
                 #              feed_dict={X_train: batch_data,
                 #                         y_train_indices: batch_indices,
                 #                         y_train_vals: batch_vals,
                 #                         y_train_shape: batch_shape,
-                #                         seq_lengths_train: batch_seq_lengths,
-                #                         X_test: test_data_tensor,
-                #                         y_test_indices: test_label_indices,
-                #                         y_test_vals: test_label_vals,
-                #                         y_test_shape: test_label_shape,
-                #                         seq_lengths_test: test_seq_lengths})
+                #                         seq_lengths_train: batch_seq_lengths})
+                _, batch_loss, batch_err_rate, batch_pred, cur_test_loss, cur_test_err_rate, cur_test_pred, summary = \
+                    sess.run([optimizer, loss_train, err_rate_train, pred_train, loss_test, err_rate_test, pred_test, merged],
+                             feed_dict={X_train: batch_data,
+                                        y_train_indices: batch_indices,
+                                        y_train_vals: batch_vals,
+                                        y_train_shape: batch_shape,
+                                        seq_lengths_train: batch_seq_lengths,
+                                        X_test: test_data_tensor,
+                                        y_test_indices: test_label_indices,
+                                        y_test_vals: test_label_vals,
+                                        y_test_shape: test_label_shape,
+                                        seq_lengths_test: test_seq_lengths})
 
                 num_processed_batches += 1
-                # err_test = {:.4f} (phn_merged: {:.4f}
-                print('[epoch: {}, batch: {}] err_train = {:.4f} (phn_merged: {:.4f}))'.format(
-                    epoch,
-                    batch,
-                    batch_err_rate,
-                    calc_PER(SparseTensor(batch_pred.indices, batch_pred.values, batch_pred.dense_shape),
-                             SparseTensor(batch_indices, batch_vals, batch_shape)),
-                    # cur_test_err_rate,
-                    # calc_err_rate(seq_to_single_char_strings(reduce_phoneme(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape)),
-                    #               seq_to_single_char_strings(reduce_phoneme(test_label_indices, test_label_vals, test_label_shape)))
-                ))
+
+                merged_train_per = calc_PER(SparseTensor(batch_pred.indices, batch_pred.values, batch_pred.dense_shape),
+                                            SparseTensor(batch_indices, batch_vals, batch_shape))
+                merged_test_per = calc_PER(SparseTensor(cur_test_pred.indices, cur_test_pred.values, cur_test_pred.dense_shape),
+                                           SparseTensor(test_label_indices, test_label_vals, test_label_shape))
+
+                print('[epoch: {}, batch: {}] err_train = {:.4f} (phn_merged: {:.4f}))'.format(epoch,
+                                                                                               batch,
+                                                                                               batch_err_rate,
+                                                                                               merged_train_per,
+                                                                                               merged_test_per))
+
+                with open('results.csv', 'a') as f:
+                    f.write('{},{},{},{},{},{},{}\n'.format(epoch, batch, num_processed_batches, batch_err_rate,
+                                                            merged_train_per, cur_test_err_rate, merged_test_per))
+
                 tb_file_writer.add_summary(summary, num_processed_batches)
 
             saver.save(sess, os.path.join(cur_checkpoint_path, 'model'), global_step=epoch)
