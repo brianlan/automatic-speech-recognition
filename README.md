@@ -19,4 +19,5 @@ MFCC is used here to extract features out of raw sound wav. I'm using code [here
 ## PER
 A PER calculation wrapper of leven edit distance is implemented ([code](https://github.com/brianlan/automatic-speech-recognition/blob/master/src/utils/PER_merge_phn.py)), so we can based on this distance to implement PER considering merging phonemes without using TensorFlow's sub-graph.
 
-Below figure is generated using TensorBoard during training.
+Below figure is generated using TensorBoard during training phase.
+<img src="https://github.com/brianlan/automatic-speech-recognition/blob/master/tensorboard_train_error.png" width="960">
