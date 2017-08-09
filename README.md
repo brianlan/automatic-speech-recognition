@@ -17,7 +17,7 @@ MFCC is used here to extract features out of raw sound wav. I'm using code [here
 4-layer Bi-directional GRU is used as the acoustic model, and CTC is used to calculate the loss and backpropagate the gradient to the previous network layers. Dropout and Gradient Clipping are used to prevent overfitting and gradient explosion.
 
 ## PER
-A PER calculation wrapper of leven edit distance is implemented ([code](https://github.com/brianlan/automatic-speech-recognition/blob/master/src/utils/PER_merge_phn.py)), so we can based on this distance to implement PER considering merging phonemes without using TensorFlow's sub-graph.
+A PER calculation wrapper of leven edit distance is implemented ([code](https://github.com/brianlan/automatic-speech-recognition/blob/master/src/utils/PER_merge_phn.py)), so based on this distance, we can calculate PER arbitrarily without using TensorFlow's sub-graph. To be specific in this case, as suggested in [Speaker-independent phone recognition using hidden Markov models](http://repository.cmu.edu/cgi/viewcontent.cgi?article=2768&context=compsci), we merge original 61 phonemes into 39 to gain more robust predictions.
 
 Below figure is generated using TensorBoard during training phase.
 <img src="https://github.com/brianlan/automatic-speech-recognition/blob/master/tensorboard_train_error.png" width="960">
